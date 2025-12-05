@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use hayro::{InterpreterSettings, Pdf, RenderSettings};
+use rayon::prelude::*;
 use seahorse::{App, Flag, FlagType};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tempfile::tempdir;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -54,10 +54,6 @@ fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Resul
 
     let page_count = pdf.pages().len();
     println!("  {}ページを処理します", page_count);
-
-    // 一時ディレクトリを作成
-    let temp_dir = tempdir().context("一時ディレクトリの作成に失敗しました")?;
-
     println!("  PDFをJPEG画像に変換中（DPI: {}）...", dpi);
 
     // DPIからスケールを計算（72 DPI = 1.0スケール）
@@ -72,52 +68,54 @@ fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Resul
 
     let interpreter_settings = InterpreterSettings::default();
 
-    let mut image_files = Vec::new();
+    // 各ページを並列でメモリ上で画像に変換
+    let image_data: Result<Vec<_>> = pdf
+        .pages()
+        .par_iter()
+        .enumerate()
+        .map(|(page_index, page)| {
+            // ページをレンダリング
+            let pixmap = hayro::render(page, &interpreter_settings, &render_settings);
 
-    // 各ページを画像に変換
-    for (page_index, page) in pdf.pages().iter().enumerate() {
-        println!("    ページ {}/{} を変換中...", page_index + 1, page_count);
+            // PNG形式でエンコード
+            let png_data = pixmap.take_png();
 
-        // ページをレンダリング
-        let pixmap = hayro::render(page, &interpreter_settings, &render_settings);
+            // PNGをデコードしてJPEGとして再エンコード（圧縮のため）
+            let image_buffer = image::load_from_memory(&png_data)
+                .context("PNG画像のデコードに失敗しました")?
+                .to_rgb8();
 
-        // PNG形式でエンコード
-        let png_data = pixmap.take_png();
+            let width = image_buffer.width();
+            let height = image_buffer.height();
 
-        // PNGをデコードしてJPEGとして再エンコード（圧縮のため）
-        let image_buffer = image::load_from_memory(&png_data)
-            .context("PNG画像のデコードに失敗しました")?
-            .to_rgb8();
+            // JPEG品質85でメモリ上にエンコード
+            let mut jpeg_data = Vec::new();
+            let mut jpeg_encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_data, 85);
+            jpeg_encoder
+                .encode(
+                    image_buffer.as_raw(),
+                    width,
+                    height,
+                    image::ColorType::Rgb8.into(),
+                )
+                .context("JPEG画像のエンコードに失敗しました")?;
 
-        // JPEGとして保存
-        let image_path = temp_dir
-            .path()
-            .join(format!("page-{:04}.jpg", page_index + 1));
+            Ok((page_index, jpeg_data, width, height))
+        })
+        .collect();
 
-        // JPEG品質85でエンコード
-        let mut jpeg_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-            std::fs::File::create(&image_path)?,
-            85,
-        );
-        jpeg_encoder
-            .encode(
-                image_buffer.as_raw(),
-                image_buffer.width(),
-                image_buffer.height(),
-                image::ColorType::Rgb8.into(),
-            )
-            .context("JPEG画像の保存に失敗しました")?;
+    let mut image_data = image_data?;
+    // ページ順にソート
+    image_data.sort_by_key(|(idx, _, _, _)| *idx);
 
-        image_files.push(image_path);
-    }
-
-    println!("  {}ページの画像を生成しました", image_files.len());
+    println!("  {}ページの画像を生成しました", image_data.len());
     println!("  画像からPDFを作成中...");
 
-    // 最初の画像を読み込んでPDFのサイズを決定
-    let first_image = image::open(&image_files[0]).context("最初の画像の読み込みに失敗しました")?;
-    let img_width = first_image.width() as f32;
-    let img_height = first_image.height() as f32;
+    // 最初の画像のサイズを取得してPDFのサイズを決定
+    let (_, _, first_width, first_height) = &image_data[0];
+    let img_width = *first_width as f32;
+    let img_height = *first_height as f32;
 
     // PDFのサイズを計算（DPIから）
     let width_mm = (img_width / dpi as f32) * 25.4;
@@ -132,18 +130,9 @@ fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Resul
     let mut current_layer = doc_pdf.get_page(page1_idx).get_layer(layer1);
 
     // 各画像をPDFに追加
-    for (page_index, image_path) in image_files.iter().enumerate() {
-        println!(
-            "    ページ {}/{} を処理中...",
-            page_index + 1,
-            image_files.len()
-        );
-
-        let dynamic_image = image::open(image_path)
-            .with_context(|| format!("画像の読み込みに失敗しました: {}", image_path.display()))?;
-
-        let img_w = dynamic_image.width() as f32;
-        let img_h = dynamic_image.height() as f32;
+    for (page_index, (_, jpeg_bytes, img_w, img_h)) in image_data.iter().enumerate() {
+        let img_w = *img_w as f32;
+        let img_h = *img_h as f32;
 
         // 新しいページが必要な場合は追加（最初のページ以外）
         if page_index > 0 {
@@ -157,14 +146,6 @@ fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Resul
             current_layer = doc_pdf.get_page(page_idx).get_layer(layer_idx);
         }
 
-        // JPEGファイルを直接読み込む
-        let jpeg_bytes = std::fs::read(image_path).with_context(|| {
-            format!(
-                "JPEGファイルの読み込みに失敗しました: {}",
-                image_path.display()
-            )
-        })?;
-
         // JPEGデータを使ってImageXObjectを作成（DCTEncodeフィルタ付き）
         let image_xobject = printpdf::ImageXObject {
             width: printpdf::Px(img_w as usize),
@@ -172,7 +153,7 @@ fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Resul
             color_space: printpdf::ColorSpace::Rgb,
             bits_per_component: printpdf::ColorBits::Bit8,
             interpolate: true,
-            image_data: jpeg_bytes,
+            image_data: jpeg_bytes.clone(),
             image_filter: Some(printpdf::ImageFilter::DCT), // JPEG圧縮を保持
             clipping_bbox: None,
             smask: None,
@@ -197,9 +178,6 @@ fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Resul
             output_path,
         )?))
         .context("PDFの保存に失敗しました")?;
-
-    println!("  一時ファイルをクリーンアップ中...");
-    // tempfileクレートが自動的に一時ディレクトリを削除します
 
     Ok(())
 }
