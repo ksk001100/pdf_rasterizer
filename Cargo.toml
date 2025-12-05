@@ -1,0 +1,16 @@
+[package]
+name = "pdf_rasterizer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pdf_rasterizer"
+path = "src/main.rs"
+
+[dependencies]
+seahorse = "2.2"
+anyhow = "1.0"
+image = "0.25"
+printpdf = "0.7"
+tempfile = "3.14"
+hayro = "0.4"
