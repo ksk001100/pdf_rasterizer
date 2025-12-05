@@ -15,7 +15,7 @@ PDFファイルを画像化してから再度PDFに変換するCLIツール
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/your-username/pdf_rasterizer.git
+git clone https://github.com/ksk001100/pdf_rasterizer.git
 cd pdf_rasterizer
 
 # インストール
