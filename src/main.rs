@@ -86,16 +86,37 @@ fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Resul
             // ページをレンダリング
             let pixmap = hayro::render(page, &interpreter_settings, &render_settings);
 
-            // PNG形式でエンコード
-            let png_data = pixmap.take_png();
+            // 幅と高さを取得
+            let width = pixmap.width() as u32;
+            let height = pixmap.height() as u32;
 
-            // PNGをデコードしてJPEGとして再エンコード（圧縮のため）
-            let image_buffer = image::load_from_memory(&png_data)
-                .context("PNG画像のデコードに失敗しました")?
-                .to_rgb8();
+            // RGBAデータを取得（premultiplied）
+            let rgba_data = pixmap.take_u8();
 
-            let width = image_buffer.width();
-            let height = image_buffer.height();
+            // RGBAからRGBに変換（alphaチャンネルを除去し、un-premultiply）
+            let mut rgb_data = Vec::with_capacity((width * height * 3) as usize);
+            for chunk in rgba_data.chunks_exact(4) {
+                let r = chunk[0];
+                let g = chunk[1];
+                let b = chunk[2];
+                let a = chunk[3];
+
+                // Un-premultiply（alphaが0の場合は除算しない）
+                if a > 0 {
+                    let factor = 255.0 / a as f32;
+                    rgb_data.push((r as f32 * factor).min(255.0) as u8);
+                    rgb_data.push((g as f32 * factor).min(255.0) as u8);
+                    rgb_data.push((b as f32 * factor).min(255.0) as u8);
+                } else {
+                    rgb_data.push(0);
+                    rgb_data.push(0);
+                    rgb_data.push(0);
+                }
+            }
+
+            // RGB ImageBufferを作成
+            let image_buffer = image::RgbImage::from_vec(width, height, rgb_data)
+                .context("RGB画像バッファの作成に失敗しました")?;
 
             // JPEG品質85でメモリ上にエンコード
             let mut jpeg_data = Vec::new();
