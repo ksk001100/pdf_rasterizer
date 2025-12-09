@@ -37,17 +37,26 @@ fn main() {
             }
 
             println!("✓ 最適化が完了しました");
+
+            Ok(())
         });
 
-    app.run(args);
+    if let Err(e) = app.run(args) {
+        eprintln!("エラー: {}", e);
+        std::process::exit(1);
+    }
 }
 
 fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Result<()> {
     println!("  hayroを使用してPDFを画像化します...");
 
     // PDFファイルを読み込み
-    let pdf_data = std::fs::read(input_path)
-        .with_context(|| format!("PDFファイルの読み込みに失敗しました: {}", input_path.display()))?;
+    let pdf_data = std::fs::read(input_path).with_context(|| {
+        format!(
+            "PDFファイルの読み込みに失敗しました: {}",
+            input_path.display()
+        )
+    })?;
 
     let pdf = Pdf::new(Arc::new(pdf_data))
         .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;

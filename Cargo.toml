@@ -8,7 +8,7 @@ name = "pdf_rasterizer"
 path = "src/main.rs"
 
 [dependencies]
-seahorse = "2.2"
+seahorse = { git = "https://github.com/ksk001100/seahorse", branch = "dev" }
 anyhow = "1.0"
 image = "0.25"
 printpdf = "0.7"
