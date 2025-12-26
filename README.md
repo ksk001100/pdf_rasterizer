@@ -1,13 +1,14 @@
 # pdf_rasterizer
 
-PDFファイルを画像化してから再度PDFに変換するCLIツール
+PDFファイルを画像化してから再度PDFに変換するツール
 
 ## 特徴
 
-- **シンプルなインストール**: `cargo install` だけで完結
+- **CLIとWebアプリの両対応**: コマンドラインツールとブラウザアプリとして利用可能
 - **純粋なRust実装**: hayroを使用してPDFをレンダリング
 - **外部依存なし**: すべての処理をRustライブラリで実行
 - **高品質**: DPI指定で解像度を調整可能
+- **ブラウザで完結**: WebAssemblyでブラウザ上で動作（サーバーにアップロード不要）
 
 ## インストール
 
@@ -34,15 +35,30 @@ cargo build --release
 
 ## 使い方
 
+### Webアプリケーション（推奨）
+
+GitHub Pagesでホストされているウェブアプリを利用できます：
+
+**https://ksk001100.github.io/pdf_rasterizer/**
+
+1. PDFファイルを選択
+2. 必要に応じてDPI（解像度）を調整
+3. 「変換」ボタンをクリック
+4. 変換されたPDFをダウンロード
+
+すべての処理はブラウザ内で完結し、ファイルがサーバーにアップロードされることはありません。
+
+### CLIツール
+
 ```bash
 pdf_rasterizer [OPTIONS] <入力PDF> <出力PDF>
 ```
 
-### オプション
+#### オプション
 
 - `--dpi <DPI>`: ラスタライズ時の解像度（デフォルト: 72）
 
-### 例
+#### 例
 
 ```bash
 # デフォルト設定（DPI: 72、元のサイズを維持）
@@ -60,10 +76,41 @@ pdf_rasterizer --dpi 300 input.pdf output.pdf
 
 **注意**: テキスト選択などのインタラクティブ機能は失われます
 
+## 開発
+
+### Webアプリケーションのローカル実行
+
+```bash
+# Trunkをインストール
+cargo install trunk
+
+# WASMターゲットを追加
+rustup target add wasm32-unknown-unknown
+
+# 開発サーバーを起動
+trunk serve
+```
+
+ブラウザで http://localhost:8080 を開いてアプリケーションを確認できます。
+
+### プロダクションビルド
+
+```bash
+trunk build --release
+```
+
+ビルドされたファイルは `dist/` ディレクトリに出力されます。
+
 ## 技術スタック
 
+### フロントエンド (WebAssembly)
+- **Yew**: Rustで書かれたモダンなWebフレームワーク
+- **Trunk**: WASMアプリケーションのビルドツール
+- **gloo**: Web APIのRustラッパー
+
+### バックエンド / PDF処理
 - **hayro**: 純粋なRust実装のPDFレンダリングライブラリ
-- **printpdf**: PDF生成
+- **lopdf**: PDF生成・操作ライブラリ
 - **image**: 画像処理
 
 ## ライセンス

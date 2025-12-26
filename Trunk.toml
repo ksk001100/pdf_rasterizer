@@ -1,0 +1,9 @@
+[build]
+public_url = "/pdf_rasterizer/"
+
+[watch]
+ignore = ["dist"]
+
+[serve]
+port = 8080
+open = true

@@ -3,14 +3,42 @@ name = "pdf_rasterizer"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [[bin]]
 name = "pdf_rasterizer"
 path = "src/main.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "wasm"
+path = "src/bin/wasm.rs"
+required-features = ["wasm"]
 
 [dependencies]
-seahorse = { git = "https://github.com/ksk001100/seahorse", branch = "dev" }
 anyhow = "1.0"
 image = "0.25"
-printpdf = "0.7"
+lopdf = "0.35"
 hayro = "0.4"
-rayon = "1.10"
+hayro-syntax = "0.4"
+
+# CLI only dependencies
+seahorse = { git = "https://github.com/ksk001100/seahorse", branch = "dev", optional = true }
+rayon = { version = "1.10", optional = true }
+
+# WASM dependencies
+yew = { version = "0.21", features = ["csr"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", features = ["File", "Blob", "Url", "HtmlAnchorElement", "FileReader", "ProgressEvent"], optional = true }
+gloo-file = { version = "0.3", optional = true }
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
+js-sys = { version = "0.3", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+gloo-console = { version = "0.3", optional = true }
+
+[features]
+default = ["cli"]
+cli = ["seahorse", "rayon"]
+wasm = ["yew", "wasm-bindgen", "wasm-bindgen-futures", "web-sys", "gloo-file", "gloo-timers", "js-sys", "gloo-console"]

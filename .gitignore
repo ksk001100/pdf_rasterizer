@@ -1,5 +1,6 @@
 /target
 /pdfium
+/dist
 
 # テスト用PDFファイル
 *.pdf

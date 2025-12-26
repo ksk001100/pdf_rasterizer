@@ -1,10 +1,7 @@
 use anyhow::{Context, Result};
-use hayro::{InterpreterSettings, Pdf, RenderSettings};
-use rayon::prelude::*;
 use seahorse::{App, Flag, FlagType};
 use std::env;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -31,7 +28,7 @@ fn main() {
             println!("出力: {}", output.display());
             println!("DPI: {}", dpi);
 
-            if let Err(e) = rasterize_pdf(&input, &output, dpi) {
+            if let Err(e) = process_pdf(&input, &output, dpi) {
                 eprintln!("エラー: {}", e);
                 std::process::exit(1);
             }
@@ -47,7 +44,7 @@ fn main() {
     }
 }
 
-fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Result<()> {
+fn process_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Result<()> {
     println!("  hayroを使用してPDFを画像化します...");
 
     // PDFファイルを読み込み
@@ -58,155 +55,10 @@ fn rasterize_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Resul
         )
     })?;
 
-    let pdf = Pdf::new(Arc::new(pdf_data))
-        .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;
-
-    let page_count = pdf.pages().len();
-    println!("  {}ページを処理します", page_count);
-    println!("  PDFをJPEG画像に変換中（DPI: {}）...", dpi);
-
-    // DPIからスケールを計算（72 DPI = 1.0スケール）
-    let scale = dpi as f32 / 72.0;
-
-    let render_settings = RenderSettings {
-        x_scale: scale,
-        y_scale: scale,
-        width: None,  // 自動計算
-        height: None, // 自動計算
-    };
-
-    let interpreter_settings = InterpreterSettings::default();
-
-    // 各ページを並列でメモリ上で画像に変換
-    let image_data: Result<Vec<_>> = pdf
-        .pages()
-        .par_iter()
-        .enumerate()
-        .map(|(page_index, page)| {
-            // ページをレンダリング
-            let pixmap = hayro::render(page, &interpreter_settings, &render_settings);
-
-            // 幅と高さを取得
-            let width = pixmap.width() as u32;
-            let height = pixmap.height() as u32;
-
-            // RGBAデータを取得（premultiplied）
-            let rgba_data = pixmap.take_u8();
-
-            // RGBAからRGBに変換（alphaチャンネルを除去し、un-premultiply）
-            let mut rgb_data = Vec::with_capacity((width * height * 3) as usize);
-            for chunk in rgba_data.chunks_exact(4) {
-                let r = chunk[0];
-                let g = chunk[1];
-                let b = chunk[2];
-                let a = chunk[3];
-
-                // Un-premultiply（alphaが0の場合は除算しない）
-                if a > 0 {
-                    let factor = 255.0 / a as f32;
-                    rgb_data.push((r as f32 * factor).min(255.0) as u8);
-                    rgb_data.push((g as f32 * factor).min(255.0) as u8);
-                    rgb_data.push((b as f32 * factor).min(255.0) as u8);
-                } else {
-                    rgb_data.push(0);
-                    rgb_data.push(0);
-                    rgb_data.push(0);
-                }
-            }
-
-            // RGB ImageBufferを作成
-            let image_buffer = image::RgbImage::from_vec(width, height, rgb_data)
-                .context("RGB画像バッファの作成に失敗しました")?;
-
-            // JPEG品質85でメモリ上にエンコード
-            let mut jpeg_data = Vec::new();
-            let mut jpeg_encoder =
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_data, 85);
-            jpeg_encoder
-                .encode(
-                    image_buffer.as_raw(),
-                    width,
-                    height,
-                    image::ColorType::Rgb8.into(),
-                )
-                .context("JPEG画像のエンコードに失敗しました")?;
-
-            Ok((page_index, jpeg_data, width, height))
-        })
-        .collect();
-
-    let mut image_data = image_data?;
-    // ページ順にソート
-    image_data.sort_by_key(|(idx, _, _, _)| *idx);
-
-    println!("  {}ページの画像を生成しました", image_data.len());
-    println!("  画像からPDFを作成中...");
-
-    // 最初の画像のサイズを取得してPDFのサイズを決定
-    let (_, _, first_width, first_height) = &image_data[0];
-    let img_width = *first_width as f32;
-    let img_height = *first_height as f32;
-
-    // PDFのサイズを計算（DPIから）
-    let width_mm = (img_width / dpi as f32) * 25.4;
-    let height_mm = (img_height / dpi as f32) * 25.4;
-
-    let (doc_pdf, page1_idx, layer1) = printpdf::PdfDocument::new(
-        "Optimized PDF",
-        printpdf::Mm(width_mm),
-        printpdf::Mm(height_mm),
-        "Layer 1",
-    );
-    let mut current_layer = doc_pdf.get_page(page1_idx).get_layer(layer1);
-
-    // 各画像をPDFに追加
-    for (page_index, (_, jpeg_bytes, img_w, img_h)) in image_data.iter().enumerate() {
-        let img_w = *img_w as f32;
-        let img_h = *img_h as f32;
-
-        // 新しいページが必要な場合は追加（最初のページ以外）
-        if page_index > 0 {
-            let page_width_mm = (img_w / dpi as f32) * 25.4;
-            let page_height_mm = (img_h / dpi as f32) * 25.4;
-            let (page_idx, layer_idx) = doc_pdf.add_page(
-                printpdf::Mm(page_width_mm),
-                printpdf::Mm(page_height_mm),
-                "Layer 1",
-            );
-            current_layer = doc_pdf.get_page(page_idx).get_layer(layer_idx);
-        }
-
-        // JPEGデータを使ってImageXObjectを作成（DCTEncodeフィルタ付き）
-        let image_xobject = printpdf::ImageXObject {
-            width: printpdf::Px(img_w as usize),
-            height: printpdf::Px(img_h as usize),
-            color_space: printpdf::ColorSpace::Rgb,
-            bits_per_component: printpdf::ColorBits::Bit8,
-            interpolate: true,
-            image_data: jpeg_bytes.clone(),
-            image_filter: Some(printpdf::ImageFilter::DCT), // JPEG圧縮を保持
-            clipping_bbox: None,
-            smask: None,
-        };
-
-        let img = printpdf::Image::from(image_xobject);
-
-        // 画像をページ全体に配置
-        // DPIを設定することで、printpdfが自動的に正しいサイズで配置する
-        img.add_to_layer(
-            current_layer.clone(),
-            printpdf::ImageTransform {
-                dpi: Some(dpi as f32),
-                ..Default::default()
-            },
-        );
-    }
+    let output_data = pdf_rasterizer::rasterize_pdf(pdf_data, dpi)?;
 
     println!("  PDFを保存しています...");
-    doc_pdf
-        .save(&mut std::io::BufWriter::new(std::fs::File::create(
-            output_path,
-        )?))
+    std::fs::write(output_path, output_data)
         .context("PDFの保存に失敗しました")?;
 
     Ok(())
