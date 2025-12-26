@@ -412,47 +412,6 @@ body::before {
     font-size: 1rem;
 }
 
-.footer {
-    background: rgba(15, 23, 42, 0.5);
-    padding: 24px;
-    text-align: center;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(10px);
-}
-
-.footer p {
-    font-size: 0.85rem;
-    color: #64748b;
-    font-family: 'SF Mono', monospace;
-}
-
-.footer a {
-    color: #8b5cf6;
-    text-decoration: none;
-    font-weight: 600;
-    transition: color 0.3s ease;
-    position: relative;
-}
-
-.footer a::after {
-    content: '';
-    position: absolute;
-    bottom: -2px;
-    left: 0;
-    width: 0;
-    height: 2px;
-    background: linear-gradient(90deg, #8b5cf6, #3b82f6);
-    transition: width 0.3s ease;
-}
-
-.footer a:hover {
-    color: #a78bfa;
-}
-
-.footer a:hover::after {
-    width: 100%;
-}
-
 @media (max-width: 600px) {
     .header h1 {
         font-size: 2rem;
