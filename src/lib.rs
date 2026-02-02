@@ -319,12 +319,13 @@ where
     F: Fn(String),
 {
     use gloo_console::log;
+    use gloo_timers::future::TimeoutFuture;
 
-    // レンダリング用
-    let pdf = Pdf::new(Arc::new(pdf_data.clone()))
-        .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;
+    // UIに「読み込み中」を表示させるために、処理を一度イベントループに戻す
+    progress_callback("PDFを解析中...".to_string());
+    TimeoutFuture::new(50).await;
 
-    // 構造変更用
+    // 構造変更用 (lopdf) - 早期チェック
     let mut doc = lopdf::Document::load_mem(&pdf_data).context("PDFのロードに失敗しました")?;
 
     if doc.is_encrypted() {
@@ -338,6 +339,10 @@ where
             "ページを検出できませんでした。PDF構造が読み取れないか、暗号化が解除できていません。"
         ));
     }
+
+    // レンダリング用 (hayro) - 構造チェックが通ってから実行
+    let pdf = Pdf::new(Arc::new(pdf_data.clone()))
+        .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;
 
     // 対象ページを決定
     let target_pages = if let Some(pages) = target_pages {
@@ -442,6 +447,10 @@ where
     F: Fn(String),
 {
     use gloo_console::log;
+    use gloo_timers::future::TimeoutFuture;
+
+    progress_callback("PDFを解析中...".to_string());
+    TimeoutFuture::new(50).await;
 
     // hayroは暗号化されていてもレンダリング可能（パスワード不要な場合）
     // パスワードが必要な場合はエラーになるが、今回は標準的な閲覧可能PDFを想定
