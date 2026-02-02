@@ -10,6 +10,7 @@ fn main() {
         .version(env!("CARGO_PKG_VERSION"))
         .usage("pdf_rasterizer <input> <output> [--dpi <value>]")
         .flag(Flag::new("dpi", FlagType::Int).description("ラスタライズ時のDPI（解像度）"))
+        .flag(Flag::new("pages", FlagType::String).description("対象ページ範囲（例: 1,3-5）"))
         .action(|c| {
             let input = PathBuf::from(
                 c.args
@@ -22,13 +23,20 @@ fn main() {
                     .expect("出力PDFファイルのパスを指定してください"),
             );
             let dpi = c.int_flag("dpi").unwrap_or(72) as u32;
+            let pages_str = c.string_flag("pages").unwrap_or_default();
+            let target_pages = pdf_rasterizer::parse_page_range(&pages_str);
 
             println!("PDFを最適化しています...");
             println!("入力: {}", input.display());
             println!("出力: {}", output.display());
             println!("DPI: {}", dpi);
+            if let Some(pages) = &target_pages {
+                println!("対象ページ: {:?}", pages);
+            } else {
+                println!("対象ページ: 全て");
+            }
 
-            if let Err(e) = process_pdf(&input, &output, dpi) {
+            if let Err(e) = process_pdf(&input, &output, dpi, target_pages) {
                 eprintln!("エラー: {}", e);
                 std::process::exit(1);
             }
@@ -44,7 +52,12 @@ fn main() {
     }
 }
 
-fn process_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Result<()> {
+fn process_pdf(
+    input_path: &PathBuf,
+    output_path: &PathBuf,
+    dpi: u32,
+    target_pages: Option<Vec<u32>>,
+) -> Result<()> {
     println!("  hayroを使用してPDFを画像化します...");
 
     // PDFファイルを読み込み
@@ -55,11 +68,10 @@ fn process_pdf(input_path: &PathBuf, output_path: &PathBuf, dpi: u32) -> Result<
         )
     })?;
 
-    let output_data = pdf_rasterizer::rasterize_pdf(pdf_data, dpi)?;
+    let output_data = pdf_rasterizer::rasterize_pdf(pdf_data, dpi, target_pages)?;
 
     println!("  PDFを保存しています...");
-    std::fs::write(output_path, output_data)
-        .context("PDFの保存に失敗しました")?;
+    std::fs::write(output_path, output_data).context("PDFの保存に失敗しました")?;
 
     Ok(())
 }

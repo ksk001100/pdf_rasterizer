@@ -30,7 +30,7 @@ body::before {
     right: 0;
     bottom: 0;
     background-image:
-        repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.03) 2px, rgba(255,255,255,0.03) 4px);
+        repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255, 255, 255, 0.03) 2px, rgba(255, 255, 255, 0.03) 4px);
     pointer-events: none;
     z-index: 1;
 }
@@ -53,9 +53,9 @@ body::before {
 
 .header {
     background: linear-gradient(135deg,
-        rgba(139, 92, 246, 0.3) 0%,
-        rgba(59, 130, 246, 0.3) 50%,
-        rgba(16, 185, 129, 0.3) 100%);
+            rgba(139, 92, 246, 0.3) 0%,
+            rgba(59, 130, 246, 0.3) 50%,
+            rgba(16, 185, 129, 0.3) 100%);
     padding: 48px 40px;
     text-align: center;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
@@ -75,8 +75,17 @@ body::before {
 }
 
 @keyframes pulse {
-    0%, 100% { transform: scale(1) rotate(0deg); opacity: 0.5; }
-    50% { transform: scale(1.1) rotate(180deg); opacity: 0.8; }
+
+    0%,
+    100% {
+        transform: scale(1) rotate(0deg);
+        opacity: 0.5;
+    }
+
+    50% {
+        transform: scale(1.1) rotate(180deg);
+        opacity: 0.8;
+    }
 }
 
 .header h1 {
@@ -215,11 +224,42 @@ body::before {
     box-shadow: 0 0 20px rgba(139, 92, 246, 0.3);
 }
 
-.dpi-hint {
+.dpi-hint,
+.range-hint {
     margin-top: 10px;
     font-size: 0.8rem;
     color: #64748b;
     font-style: italic;
+}
+
+.range-label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 600;
+    color: #cbd5e1;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.range-input {
+    flex: 1;
+    padding: 12px 16px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 2px solid rgba(139, 92, 246, 0.3);
+    border-radius: 10px;
+    font-size: 1rem;
+    color: #e2e8f0;
+    font-family: inherit;
+    transition: all 0.3s ease;
+}
+
+.range-input:focus {
+    outline: none;
+    border-color: #8b5cf6;
+    background: rgba(15, 23, 42, 0.8);
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.3);
 }
 
 .action-section {
@@ -348,8 +388,15 @@ body::before {
 }
 
 @keyframes borderGlow {
-    0%, 100% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
+
+    0%,
+    100% {
+        background-position: 0% 50%;
+    }
+
+    50% {
+        background-position: 100% 50%;
+    }
 }
 
 .progress p {
@@ -373,8 +420,13 @@ body::before {
 }
 
 @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
 }
 
 .success {

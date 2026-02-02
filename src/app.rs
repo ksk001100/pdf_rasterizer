@@ -9,8 +9,10 @@ pub enum Msg {
     FileSelected(Vec<File>),
     FileLoaded(Vec<u8>),
     ProcessPdf(u32),
+    ProcessPdfFull(u32),
     PdfProcessed(Result<Vec<u8>, String>),
     SetDpi(u32),
+    SetPageRange(String),
     UpdateProgress(String),
 }
 
@@ -21,6 +23,7 @@ pub struct App {
     file_reader: Option<FileReader>,
     dpi: u32,
     file_name: Option<String>,
+    page_range: String,
     progress_message: Option<String>,
 }
 
@@ -36,6 +39,7 @@ impl Component for App {
             file_reader: None,
             dpi: 72,
             file_name: None,
+            page_range: String::new(),
             progress_message: None,
         }
     }
@@ -71,17 +75,48 @@ impl Component for App {
 
                     let data = data.clone();
                     let link = ctx.link().clone();
+                    let page_range = self.page_range.clone();
+
+                    let target_pages = crate::parse_page_range(&page_range);
+
+                    if let Some(target_pages) = &target_pages {
+                        log!(format!("対象ページ: {:?}", target_pages));
+                    }
 
                     // WASMで処理を実行
                     wasm_bindgen_futures::spawn_local(async move {
-                        let result = crate::rasterize_pdf_with_progress(data, dpi, {
+                        let result = crate::rasterize_pdf_with_progress(data, dpi, target_pages, {
                             let link = link.clone();
                             move |msg| {
                                 link.send_message(Msg::UpdateProgress(msg));
                             }
                         })
                         .await
-                        .map_err(|e| format!("エラー: {}", e));
+                        .map_err(|e| format!("{}", e)); // anyhowのエラーを文字列化
+                        link.send_message(Msg::PdfProcessed(result));
+                    });
+                }
+                true
+            }
+            Msg::ProcessPdfFull(dpi) => {
+                if let Some(data) = &self.file {
+                    self.processing = true;
+                    self.result = None;
+                    self.progress_message =
+                        Some("全ページラスタライズを開始しています...".to_string());
+
+                    let data = data.clone();
+                    let link = ctx.link().clone();
+
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let result = crate::rasterize_all_new_pdf_with_progress(data, dpi, {
+                            let link = link.clone();
+                            move |msg| {
+                                link.send_message(Msg::UpdateProgress(msg));
+                            }
+                        })
+                        .await
+                        .map_err(|e| format!("{}", e));
                         link.send_message(Msg::PdfProcessed(result));
                     });
                 }
@@ -92,13 +127,32 @@ impl Component for App {
                 self.progress_message = None;
                 match &result {
                     Ok(_) => log!("PDF処理が完了しました"),
-                    Err(e) => log!(format!("エラー: {}", e)),
+                    Err(e) => {
+                        log!(format!("エラー: {}", e));
+                        // 暗号化エラーかどうかを文字列判定
+                        if e.contains("暗号化") || e.contains("Decryption") {
+                            let confirm = web_sys::window()
+                            .unwrap()
+                            .confirm_with_message("このPDFは暗号化されているため、部分的なラスタライズができません。\n全ページをラスタライズして、新しいPDFを作成しますか？\n（元のベクター情報は失われます）");
+
+                            if let Ok(true) = confirm {
+                                let link = ctx.link().clone();
+                                let dpi = self.dpi;
+                                link.send_message(Msg::ProcessPdfFull(dpi));
+                                return true;
+                            }
+                        }
+                    }
                 }
                 self.result = Some(result);
                 true
             }
             Msg::SetDpi(dpi) => {
                 self.dpi = dpi;
+                true
+            }
+            Msg::SetPageRange(range) => {
+                self.page_range = range;
                 true
             }
             Msg::UpdateProgress(message) => {
@@ -139,6 +193,14 @@ impl Component for App {
                 if let Ok(value) = input.value().parse::<u32>() {
                     link.send_message(Msg::SetDpi(value));
                 }
+            })
+        };
+
+        let on_page_range_change = {
+            let link = ctx.link().clone();
+            Callback::from(move |e: Event| {
+                let input: HtmlInputElement = e.target().unwrap().dyn_into().unwrap();
+                link.send_message(Msg::SetPageRange(input.value()));
             })
         };
 
@@ -206,6 +268,20 @@ impl Component for App {
                             />
                         </label>
                         <p class="dpi-hint">{ "解像度を指定します（72-600）" }</p>
+                    </div>
+
+                    <div class="settings-section">
+                        <label class="range-label">
+                            { "ページ範囲: " }
+                            <input
+                                type="text"
+                                value={self.page_range.clone()}
+                                onchange={on_page_range_change}
+                                placeholder="例: 1, 3-5 (空欄で全ページ)"
+                                class="range-input"
+                            />
+                        </label>
+                        <p class="range-hint">{ "対象ページを指定します（カンマ区切り、ハイフンで範囲指定）" }</p>
                     </div>
 
                     <div class="action-section">
