@@ -131,9 +131,22 @@ impl Component for App {
                         log!(format!("エラー: {}", e));
                         // 暗号化エラーかどうかを文字列判定
                         if e.contains("暗号化") || e.contains("Decryption") {
+                            // ページ範囲が指定されていない（＝全ページ）場合は、
+                            // ダイアログを出さずに自動的に全ページラスタライズ（再構築）に移行する
+                            let is_all_pages = crate::parse_page_range(&self.page_range).is_none();
+
+                            if is_all_pages {
+                                log!("暗号化PDFかつ全ページ指定のため、自動的にFull Rasterizationに移行します");
+                                let link = ctx.link().clone();
+                                let dpi = self.dpi;
+                                link.send_message(Msg::ProcessPdfFull(dpi));
+                                return true;
+                            }
+
+                            // 部分指定の場合は確認ダイアログを出す
                             let confirm = web_sys::window()
-                            .unwrap()
-                            .confirm_with_message("このPDFは暗号化されているため、部分的なラスタライズができません。\n全ページをラスタライズして、新しいPDFを作成しますか？\n（元のベクター情報は失われます）");
+                                .unwrap()
+                                .confirm_with_message("このPDFは暗号化されているため、部分的なラスタライズができません。\n全ページをラスタライズして、新しいPDFを作成しますか？\n（元のベクター情報は失われます）");
 
                             if let Ok(true) = confirm {
                                 let link = ctx.link().clone();
