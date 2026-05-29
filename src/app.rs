@@ -83,15 +83,20 @@ impl Component for App {
                         log!(format!("対象ページ: {:?}", target_pages));
                     }
 
-                    // WASMで処理を実行
+                    // ページ指定がない場合は元PDF構造の解析を避け、新規PDFとして再構築する。
                     wasm_bindgen_futures::spawn_local(async move {
-                        let result = crate::rasterize_pdf_with_progress(data, dpi, target_pages, {
+                        let progress = {
                             let link = link.clone();
                             move |msg| {
                                 link.send_message(Msg::UpdateProgress(msg));
                             }
-                        })
-                        .await
+                        };
+                        let result = if target_pages.is_none() {
+                            crate::rasterize_all_new_pdf_with_progress(data, dpi, progress).await
+                        } else {
+                            crate::rasterize_pdf_with_progress(data, dpi, target_pages, progress)
+                                .await
+                        }
                         .map_err(|e| format!("{}", e)); // anyhowのエラーを文字列化
                         link.send_message(Msg::PdfProcessed(result));
                     });

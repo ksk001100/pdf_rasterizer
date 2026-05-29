@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use hayro::{InterpreterSettings, Pdf, RenderSettings};
+use lopdf::ObjectId;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[cfg(feature = "wasm")]
@@ -7,9 +9,6 @@ mod app;
 
 #[cfg(feature = "wasm")]
 pub use app::App;
-
-#[cfg(feature = "wasm")]
-use gloo_timers::future::TimeoutFuture;
 
 /// PDFファイルを画像化してから再度PDFに変換する
 ///
@@ -26,10 +25,6 @@ pub fn rasterize_pdf(
         log!(format!("PDFを読み込み中..."));
     }
 
-    // hayro用のPDFオブジェクトを作成（レンダリング用）
-    let pdf = Pdf::new(Arc::new(pdf_data.clone()))
-        .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;
-
     // lopdf用のドキュメントを作成（構造変更用）
     let mut doc = lopdf::Document::load_mem(&pdf_data).context("PDFのロードに失敗しました")?;
 
@@ -38,14 +33,8 @@ pub fn rasterize_pdf(
             .map_err(|e| anyhow::anyhow!("PDFの復号化に失敗しました: {:?}", e))?;
     }
 
-    // Try to force page tree traversal?
-    // doc.get_pages() returns reference to doc.pages. If empty, maybe we can populate it?
-    if doc.get_pages().is_empty() {
-        // Note: lopdf doesn't have a public rebuild_pages method easily accessible?
-        // Actually, let's see why it's empty.
-    }
-
-    let total_pages = doc.get_pages().len();
+    let page_ids = doc.get_pages();
+    let total_pages = page_ids.len();
     if total_pages == 0 {
         return Err(anyhow::anyhow!(
             "ページを検出できませんでした。PDF構造が読み取れないか、暗号化が解除できていません。"
@@ -53,20 +42,15 @@ pub fn rasterize_pdf(
     }
 
     // 対象ページを決定
-    let target_pages: Vec<u32> = if let Some(pages) = target_pages {
-        // 指定されたページのみ（範囲チェックを行い、有効なページのみ抽出）
-        pages
-            .into_iter()
-            .filter(|&p| p >= 1 && p <= total_pages as u32)
-            .collect()
-    } else {
-        // 全ページ対象
-        (1..=total_pages as u32).collect()
-    };
+    let target_pages = target_page_numbers(target_pages, &page_ids);
 
     if target_pages.is_empty() {
         return Ok(pdf_data);
     }
+
+    // hayro用のPDFオブジェクトを作成（レンダリング用）
+    let pdf = Pdf::new(Arc::new(pdf_data))
+        .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;
 
     #[cfg(feature = "wasm")]
     {
@@ -139,7 +123,11 @@ pub fn rasterize_pdf(
 
     // 生成した画像でPDFを更新
     for (page_num, jpeg_bytes, img_w, img_h) in image_data {
-        replace_page_content(&mut doc, page_num, jpeg_bytes, img_w, img_h, dpi)?;
+        let page_id = page_ids
+            .get(&page_num)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("ページIDが見つかりません"))?;
+        replace_page_content(&mut doc, page_id, jpeg_bytes, img_w, img_h, dpi)?;
     }
 
     #[cfg(feature = "wasm")]
@@ -159,24 +147,13 @@ pub fn rasterize_pdf(
 
 fn replace_page_content(
     doc: &mut lopdf::Document,
-    page_num: u32,
+    page_id: ObjectId,
     jpeg_bytes: Vec<u8>,
     img_w: u32,
     img_h: u32,
     dpi: u32,
 ) -> Result<()> {
-    // ページオブジェクトIDを取得
-    let page_id = doc
-        .get_pages()
-        .get(&page_num)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("ページIDが見つかりません"))?;
-
-    let img_w_f = img_w as f32;
-    let img_h_f = img_h as f32;
-
-    let page_width = (img_w_f / dpi as f32) * 72.0; // ポイント単位に変換
-    let page_height = (img_h_f / dpi as f32) * 72.0;
+    let (page_width, page_height) = image_size_to_points(img_w, img_h, dpi);
 
     // 画像XObjectを作成
     let image_stream = lopdf::Stream::new(
@@ -275,36 +252,51 @@ fn process_page(
         let b = chunk[2];
         let a = chunk[3];
 
-        // Un-premultiply（alphaが0の場合は除算しない）
-        if a > 0 {
-            let factor = 255.0 / a as f32;
-            rgb_data.push((r as f32 * factor).min(255.0) as u8);
-            rgb_data.push((g as f32 * factor).min(255.0) as u8);
-            rgb_data.push((b as f32 * factor).min(255.0) as u8);
+        if a == 255 {
+            rgb_data.extend_from_slice(&[r, g, b]);
+        } else if a == 0 {
+            rgb_data.push(0);
+            rgb_data.push(0);
+            rgb_data.push(0);
         } else {
-            rgb_data.push(0);
-            rgb_data.push(0);
-            rgb_data.push(0);
+            rgb_data.push(unpremultiply_channel(r, a));
+            rgb_data.push(unpremultiply_channel(g, a));
+            rgb_data.push(unpremultiply_channel(b, a));
         }
     }
-
-    // RGB ImageBufferを作成
-    let image_buffer = image::RgbImage::from_vec(width, height, rgb_data)
-        .context("RGB画像バッファの作成に失敗しました")?;
 
     // JPEG品質85でメモリ上にエンコード
     let mut jpeg_data = Vec::new();
     let mut jpeg_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_data, 85);
     jpeg_encoder
-        .encode(
-            image_buffer.as_raw(),
-            width,
-            height,
-            image::ColorType::Rgb8.into(),
-        )
+        .encode(&rgb_data, width, height, image::ColorType::Rgb8.into())
         .context("JPEG画像のエンコードに失敗しました")?;
 
     Ok((page_num, jpeg_data, width, height))
+}
+
+#[inline]
+fn unpremultiply_channel(channel: u8, alpha: u8) -> u8 {
+    (((channel as u32 * 255) + (alpha as u32 / 2)) / alpha as u32).min(255) as u8
+}
+
+fn image_size_to_points(img_w: u32, img_h: u32, dpi: u32) -> (f32, f32) {
+    let dpi = dpi as f32;
+    ((img_w as f32 / dpi) * 72.0, (img_h as f32 / dpi) * 72.0)
+}
+
+fn target_page_numbers(
+    target_pages: Option<Vec<u32>>,
+    page_ids: &BTreeMap<u32, ObjectId>,
+) -> Vec<u32> {
+    if let Some(pages) = target_pages {
+        pages
+            .into_iter()
+            .filter(|page_num| page_ids.contains_key(page_num))
+            .collect()
+    } else {
+        page_ids.keys().copied().collect()
+    }
 }
 
 /// 進捗コールバック付きでPDFを処理する（WASM専用）
@@ -322,7 +314,7 @@ where
     use gloo_timers::future::TimeoutFuture;
 
     // UIに「読み込み中」を表示させるために、処理を一度イベントループに戻す
-    progress_callback("PDFを解析中...".to_string());
+    progress_callback("レンダリング準備中...".to_string());
     TimeoutFuture::new(50).await;
 
     // 構造変更用 (lopdf) - 早期チェック
@@ -333,31 +325,25 @@ where
             .map_err(|e| anyhow::anyhow!("PDFの復号化に失敗しました: {:?}", e))?;
     }
 
-    let total_pages = doc.get_pages().len() as u32;
+    let page_ids = doc.get_pages();
+    let total_pages = page_ids.len() as u32;
     if total_pages == 0 {
         return Err(anyhow::anyhow!(
             "ページを検出できませんでした。PDF構造が読み取れないか、暗号化が解除できていません。"
         ));
     }
 
-    // レンダリング用 (hayro) - 構造チェックが通ってから実行
-    let pdf = Pdf::new(Arc::new(pdf_data.clone()))
-        .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;
-
     // 対象ページを決定
-    let target_pages = if let Some(pages) = target_pages {
-        pages
-            .into_iter()
-            .filter(|&p| p >= 1 && p <= total_pages)
-            .collect()
-    } else {
-        (1..=total_pages).collect::<Vec<_>>()
-    };
+    let target_pages = target_page_numbers(target_pages, &page_ids);
 
     if target_pages.is_empty() {
         progress_callback("処理対象のページがありません".to_string());
         return Ok(pdf_data);
     }
+
+    // レンダリング用 (hayro) - 構造チェックが通ってから実行
+    let pdf = Pdf::new(Arc::new(pdf_data))
+        .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;
 
     log!(format!("{}ページを処理します", target_pages.len()));
     progress_callback(format!(
@@ -416,7 +402,11 @@ where
             TimeoutFuture::new(1).await;
         }
 
-        replace_page_content(&mut doc, page_num, jpeg_bytes, img_w, img_h, dpi)?;
+        let page_id = page_ids
+            .get(&page_num)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("ページIDが見つかりません"))?;
+        replace_page_content(&mut doc, page_id, jpeg_bytes, img_w, img_h, dpi)?;
     }
 
     progress_callback("PDFを保存中...".to_string());
@@ -449,12 +439,12 @@ where
     use gloo_console::log;
     use gloo_timers::future::TimeoutFuture;
 
-    progress_callback("PDFを解析中...".to_string());
+    progress_callback("レンダリング準備中...".to_string());
     TimeoutFuture::new(50).await;
 
     // hayroは暗号化されていてもレンダリング可能（パスワード不要な場合）
     // パスワードが必要な場合はエラーになるが、今回は標準的な閲覧可能PDFを想定
-    let pdf = Pdf::new(Arc::new(pdf_data.clone()))
+    let pdf = Pdf::new(Arc::new(pdf_data))
         .map_err(|e| anyhow::anyhow!("PDFのパースに失敗しました: {:?}", e))?;
 
     let total_pages = pdf.pages().len();
@@ -509,6 +499,7 @@ where
             TimeoutFuture::new(1).await;
         }
 
+        let (page_width, page_height) = image_size_to_points(img_w, img_h, dpi);
         let page_id = doc.new_object_id();
         let content_id = doc.new_object_id();
         let image_id = doc.new_object_id();
@@ -529,7 +520,10 @@ where
         );
 
         // コンテンツストリーム
-        let content = format!("q\n{} 0 0 {} 0 0 cm\n/{} Do\nQ", img_w, img_h, xobject_name);
+        let content = format!(
+            "q\n{} 0 0 {} 0 0 cm\n/{} Do\nQ",
+            page_width, page_height, xobject_name
+        );
         doc.objects.insert(
             content_id,
             lopdf::Object::Stream(lopdf::Stream::new(
@@ -553,7 +547,7 @@ where
         page_dict.set("Parent", lopdf::Object::Reference(pages_id));
         page_dict.set(
             "MediaBox",
-            vec![0.into(), 0.into(), img_w.into(), img_h.into()],
+            vec![0.into(), 0.into(), page_width.into(), page_height.into()],
         );
         page_dict.set("Contents", lopdf::Object::Reference(content_id));
         page_dict.set("Resources", res_dict);
