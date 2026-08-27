@@ -12,19 +12,32 @@ fn main() {
         .flag(Flag::new("dpi", FlagType::Int).description("ラスタライズ時のDPI（解像度）"))
         .flag(Flag::new("pages", FlagType::String).description("対象ページ範囲（例: 1,3-5）"))
         .action(|c| {
-            let input = PathBuf::from(
-                c.args
-                    .get(0)
-                    .expect("入力PDFファイルのパスを指定してください"),
-            );
-            let output = PathBuf::from(
-                c.args
-                    .get(1)
-                    .expect("出力PDFファイルのパスを指定してください"),
-            );
-            let dpi = c.int_flag("dpi").unwrap_or(72) as u32;
+            if c.args.len() != 2 {
+                return Err("入力PDFと出力PDFのパスを1つずつ指定してください".into());
+            }
+            let input = PathBuf::from(&c.args[0]);
+            let output = PathBuf::from(&c.args[1]);
+            let dpi_value = c
+                .int_flag("dpi")
+                .unwrap_or(pdf_rasterizer::MIN_DPI as isize);
+            let dpi = u32::try_from(dpi_value).map_err(|_| {
+                format!(
+                    "DPIは{}から{}の範囲で指定してください",
+                    pdf_rasterizer::MIN_DPI,
+                    pdf_rasterizer::MAX_DPI
+                )
+            })?;
+            if !(pdf_rasterizer::MIN_DPI..=pdf_rasterizer::MAX_DPI).contains(&dpi) {
+                return Err(format!(
+                    "DPIは{}から{}の範囲で指定してください（指定値: {}）",
+                    pdf_rasterizer::MIN_DPI,
+                    pdf_rasterizer::MAX_DPI,
+                    dpi
+                )
+                .into());
+            }
             let pages_str = c.string_flag("pages").unwrap_or_default();
-            let target_pages = pdf_rasterizer::parse_page_range(&pages_str);
+            let target_pages = pdf_rasterizer::parse_page_range(&pages_str)?;
 
             println!("PDFを最適化しています...");
             println!("入力: {}", input.display());

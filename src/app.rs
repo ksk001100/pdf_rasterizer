@@ -77,7 +77,15 @@ impl Component for App {
                     let link = ctx.link().clone();
                     let page_range = self.page_range.clone();
 
-                    let target_pages = crate::parse_page_range(&page_range);
+                    let target_pages = match crate::parse_page_range(&page_range) {
+                        Ok(pages) => pages,
+                        Err(e) => {
+                            self.processing = false;
+                            self.progress_message = None;
+                            self.result = Some(Err(e.to_string()));
+                            return true;
+                        }
+                    };
 
                     if let Some(target_pages) = &target_pages {
                         log!(format!("対象ページ: {:?}", target_pages));
@@ -138,7 +146,9 @@ impl Component for App {
                         if e.contains("暗号化") || e.contains("Decryption") {
                             // ページ範囲が指定されていない（＝全ページ）場合は、
                             // ダイアログを出さずに自動的に全ページラスタライズ（再構築）に移行する
-                            let is_all_pages = crate::parse_page_range(&self.page_range).is_none();
+                            let is_all_pages = crate::parse_page_range(&self.page_range)
+                                .map(|pages| pages.is_none())
+                                .unwrap_or(false);
 
                             if is_all_pages {
                                 log!("暗号化PDFかつ全ページ指定のため、自動的にFull Rasterizationに移行します");

@@ -4,6 +4,10 @@ use lopdf::ObjectId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub const MIN_DPI: u32 = 72;
+pub const MAX_DPI: u32 = 600;
+const MAX_SELECTED_PAGES: usize = 100_000;
+
 #[cfg(feature = "wasm")]
 mod app;
 
@@ -19,10 +23,12 @@ pub fn rasterize_pdf(
     dpi: u32,
     target_pages: Option<Vec<u32>>,
 ) -> Result<Vec<u8>> {
+    validate_dpi(dpi)?;
+
     #[cfg(feature = "wasm")]
     {
         use gloo_console::log;
-        log!(format!("PDFを読み込み中..."));
+        log!("PDFを読み込み中...".to_string());
     }
 
     // lopdf用のドキュメントを作成（構造変更用）
@@ -42,7 +48,7 @@ pub fn rasterize_pdf(
     }
 
     // 対象ページを決定
-    let target_pages = target_page_numbers(target_pages, &page_ids);
+    let target_pages = target_page_numbers(target_pages, &page_ids)?;
 
     if target_pages.is_empty() {
         return Ok(pdf_data);
@@ -190,6 +196,17 @@ fn replace_page_content(
                 "MediaBox",
                 vec![0.into(), 0.into(), page_width.into(), page_height.into()],
             );
+            page_dict.set(
+                "CropBox",
+                vec![0.into(), 0.into(), page_width.into(), page_height.into()],
+            );
+            // hayroが回転・クロップ適用後の画像を返すため、元のページ属性を
+            // 残すと出力時に二重適用される。Rotateは継承値も上書きする。
+            page_dict.set("Rotate", lopdf::Object::Integer(0));
+            page_dict.set("UserUnit", lopdf::Object::Integer(1));
+            page_dict.remove(b"BleedBox");
+            page_dict.remove(b"TrimBox");
+            page_dict.remove(b"ArtBox");
 
             // Contentsを更新
             page_dict.set("Contents", lopdf::Object::Reference(content_id));
@@ -246,7 +263,7 @@ fn process_page(
 
     // RGBAからRGBに変換（alphaチャンネルを除去し、un-premultiply）
     let mut rgb_data = Vec::with_capacity((width * height * 3) as usize);
-    for chunk in rgba_data.chunks_exact(4) {
+    for chunk in rgba_data.as_chunks::<4>().0 {
         let r = chunk[0];
         let g = chunk[1];
         let b = chunk[2];
@@ -285,17 +302,36 @@ fn image_size_to_points(img_w: u32, img_h: u32, dpi: u32) -> (f32, f32) {
     ((img_w as f32 / dpi) * 72.0, (img_h as f32 / dpi) * 72.0)
 }
 
+fn validate_dpi(dpi: u32) -> Result<()> {
+    if !(MIN_DPI..=MAX_DPI).contains(&dpi) {
+        return Err(anyhow::anyhow!(
+            "DPIは{}から{}の範囲で指定してください（指定値: {}）",
+            MIN_DPI,
+            MAX_DPI,
+            dpi
+        ));
+    }
+    Ok(())
+}
+
 fn target_page_numbers(
     target_pages: Option<Vec<u32>>,
     page_ids: &BTreeMap<u32, ObjectId>,
-) -> Vec<u32> {
+) -> Result<Vec<u32>> {
     if let Some(pages) = target_pages {
-        pages
-            .into_iter()
-            .filter(|page_num| page_ids.contains_key(page_num))
-            .collect()
+        if let Some(page_num) = pages
+            .iter()
+            .find(|page_num| !page_ids.contains_key(page_num))
+        {
+            return Err(anyhow::anyhow!(
+                "ページ {} は存在しません（全{}ページ）",
+                page_num,
+                page_ids.len()
+            ));
+        }
+        Ok(pages)
     } else {
-        page_ids.keys().copied().collect()
+        Ok(page_ids.keys().copied().collect())
     }
 }
 
@@ -312,6 +348,8 @@ where
 {
     use gloo_console::log;
     use gloo_timers::future::TimeoutFuture;
+
+    validate_dpi(dpi)?;
 
     // UIに「読み込み中」を表示させるために、処理を一度イベントループに戻す
     progress_callback("レンダリング準備中...".to_string());
@@ -334,7 +372,7 @@ where
     }
 
     // 対象ページを決定
-    let target_pages = target_page_numbers(target_pages, &page_ids);
+    let target_pages = target_page_numbers(target_pages, &page_ids)?;
 
     if target_pages.is_empty() {
         progress_callback("処理対象のページがありません".to_string());
@@ -439,6 +477,8 @@ where
     use gloo_console::log;
     use gloo_timers::future::TimeoutFuture;
 
+    validate_dpi(dpi)?;
+
     progress_callback("レンダリング準備中...".to_string());
     TimeoutFuture::new(50).await;
 
@@ -480,7 +520,7 @@ where
         TimeoutFuture::new(1).await;
     }
 
-    log!(format!("画像を生成完了。新しいPDFを作成します..."));
+    log!("画像を生成完了。新しいPDFを作成します...".to_string());
     progress_callback("新しいPDFを作成中...".to_string());
     TimeoutFuture::new(10).await;
 
@@ -585,31 +625,114 @@ where
     Ok(output)
 }
 
-/// ページ範囲文字列（例: "1, 3-5"）をパースしてページ番号のリストを返す
-pub fn parse_page_range(input: &str) -> Option<Vec<u32>> {
+/// ページ範囲文字列（例: "1, 3-5"）をパースしてページ番号のリストを返す。
+/// 空欄は全ページを表す `None`、不正な入力はエラーになる。
+pub fn parse_page_range(input: &str) -> Result<Option<Vec<u32>>> {
     if input.trim().is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut pages = Vec::new();
     for part in input.split(',') {
         let part = part.trim();
+        if part.is_empty() {
+            return Err(anyhow::anyhow!("ページ範囲に空の項目があります"));
+        }
         if let Some((start, end)) = part.split_once('-') {
-            if let (Ok(s), Ok(e)) = (start.trim().parse::<u32>(), end.trim().parse::<u32>()) {
-                if s <= e {
-                    for p in s..=e {
-                        pages.push(p);
-                    }
-                }
+            let s = parse_page_number(start.trim())?;
+            let e = parse_page_number(end.trim())?;
+            if s > e {
+                return Err(anyhow::anyhow!(
+                    "ページ範囲の開始は終了以下にしてください: {}",
+                    part
+                ));
             }
-        } else if let Ok(p) = part.parse::<u32>() {
-            pages.push(p);
+            let range_len = (u64::from(e) - u64::from(s) + 1) as usize;
+            if pages.len().saturating_add(range_len) > MAX_SELECTED_PAGES {
+                return Err(anyhow::anyhow!(
+                    "一度に指定できるページ数は{}ページまでです",
+                    MAX_SELECTED_PAGES
+                ));
+            }
+            pages.extend(s..=e);
+        } else {
+            pages.push(parse_page_number(part)?);
+            if pages.len() > MAX_SELECTED_PAGES {
+                return Err(anyhow::anyhow!(
+                    "一度に指定できるページ数は{}ページまでです",
+                    MAX_SELECTED_PAGES
+                ));
+            }
         }
     }
     pages.sort();
     pages.dedup();
-    if pages.is_empty() {
-        None
-    } else {
-        Some(pages)
+    Ok(Some(pages))
+}
+
+fn parse_page_number(input: &str) -> Result<u32> {
+    let page = input
+        .parse::<u32>()
+        .map_err(|_| anyhow::anyhow!("不正なページ番号です: {}", input))?;
+    if page == 0 {
+        return Err(anyhow::anyhow!("ページ番号は1以上で指定してください"));
+    }
+    Ok(page)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::dictionary;
+
+    #[test]
+    fn parses_page_ranges() {
+        assert_eq!(parse_page_range("").unwrap(), None);
+        assert_eq!(
+            parse_page_range("5, 1, 3-5").unwrap(),
+            Some(vec![1, 3, 4, 5])
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_page_ranges() {
+        for input in ["invalid", "0", "3-1", "1,,2", "1-2-3", "1-4294967295"] {
+            assert!(parse_page_range(input).is_err(), "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_pages_that_do_not_exist() {
+        let page_ids = BTreeMap::from([(1, (1, 0)), (2, (2, 0))]);
+        assert!(target_page_numbers(Some(vec![1, 3]), &page_ids).is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range_dpi_before_loading_pdf() {
+        assert!(rasterize_pdf(Vec::new(), MIN_DPI - 1, None).is_err());
+        assert!(rasterize_pdf(Vec::new(), MAX_DPI + 1, None).is_err());
+    }
+
+    #[test]
+    fn replacement_normalizes_page_geometry() {
+        let mut doc = lopdf::Document::with_version("1.7");
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "MediaBox" => vec![0.into(), 0.into(), 200.into(), 100.into()],
+            "CropBox" => vec![50.into(), 0.into(), 150.into(), 100.into()],
+            "BleedBox" => vec![50.into(), 0.into(), 150.into(), 100.into()],
+            "Rotate" => 90,
+            "UserUnit" => 2,
+        });
+
+        replace_page_content(&mut doc, page_id, Vec::new(), 100, 200, 72).unwrap();
+
+        let page = doc.get_object(page_id).unwrap().as_dict().unwrap();
+        assert_eq!(page.get(b"Rotate").unwrap().as_i64().unwrap(), 0);
+        assert_eq!(page.get(b"UserUnit").unwrap().as_i64().unwrap(), 1);
+        assert_eq!(
+            page.get(b"MediaBox").unwrap(),
+            page.get(b"CropBox").unwrap()
+        );
+        assert!(!page.has(b"BleedBox"));
     }
 }
